@@ -1,0 +1,10 @@
+name: Starflock-Altitudes
+title:
+username: starflock
+account: starflock
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 18450187
+bundleId: 12830293
+url: https://starflock.shinyapps.io/Starflock-Altitudes/
+version: 1

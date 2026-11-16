@@ -598,18 +598,42 @@ server <- function(input, output, session) {
     ][order(-pressure_hPa)]
   })
 
+
+  # ==========================================================
+  # Preserve pressure slider selection when dropdowns change
+  # ==========================================================
+
   observeEvent(map_levels(), {
 
     levels <- map_levels()
+    n_levels <- nrow(levels)
 
+    # Remember the current slider position
+    current_index <- isolate(input$map_pressure_index)
+
+    # If no previous selection exists, start at level 1
+    if (is.null(current_index) ||
+        length(current_index) != 1 ||
+        !is.finite(current_index)) {
+      current_index <- 1L
+    }
+
+    # Keep the selection within the available range
+    new_index <- max(
+      1L,
+      min(n_levels, as.integer(current_index))
+    )
+
+    # Update the slider without resetting to level 1
     shiny::updateSliderInput(
       session,
       "map_pressure_index",
       min = 1,
-      max = nrow(levels),
-      value = 1,
+      max = n_levels,
+      value = new_index,
       step = 1
     )
+
   })
 
   selected_map_level <- reactive({
@@ -629,17 +653,45 @@ server <- function(input, output, session) {
     levels[i]
   })
 
+  # Standard-atmosphere pressure-to-altitude approximation.
+  # The result is approximate; actual altitude varies with weather/latitude.
+  standard_altitude_km <- function(p_hpa) {
+    p <- as.numeric(p_hpa)
+    if (!is.finite(p) || p <= 0) return(NA_real_)
+    # US Standard Atmosphere layers (base altitude km, base pressure hPa,
+    # base temperature K, lapse rate K/km).
+    hb <- c(0, 11, 20, 32, 47, 51, 71, 84.852)
+    pb <- c(1013.25, 226.321, 54.7489, 8.68019, 1.10906,
+            0.669389, 0.0395642, 0.00373384)
+    tb <- c(288.15, 216.65, 216.65, 228.65, 270.65,
+            270.65, 214.65, 186.946)
+    lapse <- c(-6.5, 0, 1, 2.8, 0, -2.8, -2, 0)
+    if (p > pb[1]) return(NA_real_)
+    k <- max(which(p <= pb))
+    k <- min(k, length(hb))
+    Rg <- 0.0341632 # g*M/R in K/m
+    if (lapse[k] == 0) {
+      return(hb[k] + tb[k] / (Rg * 1000) * log(pb[k] / p))
+    }
+    hb[k] + tb[k] / lapse[k] * ((p / pb[k]) ^ (-lapse[k] / (Rg * 1000)) - 1)
+  }
+
   output$map_pressure_label <- renderText({
-
     level <- selected_map_level()
-
-    paste0(
-      "Selected: ",
-      signif(level$pressure_hPa, 6),
-      " hPa (level ",
-      level$pressure_level_index,
-      ")"
-    )
+    p <- level$pressure_hPa
+    alt <- standard_altitude_km(p)
+    layer <- if (!is.finite(alt)) "Altitude unavailable" else if (alt < 12) {
+      "Troposphere"
+    } else if (alt < 50) {
+      "Stratosphere"
+    } else if (alt < 85) {
+      "Mesosphere"
+    } else if (alt < 600) {
+      "Thermosphere"
+    } else "Exosphere"
+    paste0(layer, "  |  ",
+           if (is.finite(alt)) paste0("~", round(alt, 1), " km  |  ") else "",
+           signif(p, 5), " hPa (level ", level$pressure_level_index, ")")
   })
 
   # ==========================================================
@@ -848,207 +900,63 @@ server <- function(input, output, session) {
   # NA values remain blank.
   # ==========================================================
 
-  output$map_plot <- renderPlotly({
-
-    theme <- theme_colors()
-
+  output$map_plot <- leaflet::renderLeaflet({
     grid <- geographic_grid()
     max_abs <- map_color_limit()
+    validate(need(grid$plotted_cells > 0, "No geographic cells could be plotted."))
 
-    validate(need(
-      grid$plotted_cells > 0,
-      "No geographic cells could be plotted."
-    ))
+    # Same diverging blue-white-red scheme and symmetric month-independent
+    # limits as the original Plotly map.
+    colors <- grDevices::colorRampPalette(
+      c("#2166AC", "#92C5DE", "#F7F7F7", "#F4A582", "#B2182B")
+    )(101)
+    pal <- leaflet::colorNumeric(colors, domain = c(-max_abs, max_abs),
+                                 na.color = "transparent")
 
-    # Explicit diverging scale.
-    # Negative: blue
-    # Zero: light
-    # Positive: red
-
-    colorscale <- list(
-      c(0.00, "#2166AC"),
-      c(0.25, "#92C5DE"),
-      c(0.50, "#F7F7F7"),
-      c(0.75, "#F4A582"),
-      c(1.00, "#B2182B")
+    basemap <- switch(input$map_basemap,
+      satellite = "Esri.WorldImagery",
+      light = "OpenStreetMap.Mapnik",
+      "Esri.WorldTopoMap"
     )
 
-    # Actual values are passed to Plotly.
-    # Values outside the color limits are saturated
-    # visually, but the hover shows the original value.
+    map <- leaflet::leaflet(options = leaflet::leafletOptions(
+      minZoom = 3, maxZoom = 12, zoomControl = TRUE
+    )) |>
+      leaflet::addProviderTiles(basemap, options = leaflet::providerTileOptions(
+        noWrap = TRUE
+      )) |>
+      leaflet::fitBounds(-125, 20, -65, 50)
 
-    p <- plotly::plot_ly(
-    x = grid$lon_centers,
-    y = grid$lat_centers,
-    z = grid$z,
-      type = "heatmap",
-
-      zmin = -max_abs,
-      zmax = max_abs,
-      zmid = 0,
-
-      zsmooth = FALSE,
-
-      colorscale = colorscale,
-
-      showscale = TRUE,
-
-      colorbar = list(
-        title = list(text = "Trend/decade"),
-        thickness = 18,
-        len = 0.80,
-        x = 1.02,
-        tickformat = ".3g"
-      ),
-
-      hoverongaps = FALSE,
-
-      hovertemplate = paste0(
-        "Latitude: %{y:.1f}",
-        "<br>Longitude: %{x:.1f}",
-        "<br>Trend/decade: %{z:.5g}",
-        "<extra></extra>"
-      )
-    )
-
-    # --------------------------------------------------------
-    # State boundaries
-    # --------------------------------------------------------
-
-    states <- maps::map(
-      "state",
-      plot = FALSE,
-      fill = FALSE
-    )
-
-    p <- plotly::add_trace(
-      p,
-      x = states$x,
-      y = states$y,
-      type = "scatter",
-      mode = "lines",
-      line = list(
-        color = theme$border,
-        width = 0.8
-      ),
-      hoverinfo = "skip",
-      showlegend = FALSE,
-      inherit = FALSE
-    )
-
-    # --------------------------------------------------------
-    # Country boundaries
-    # --------------------------------------------------------
-
-    countries <- maps::map(
-      "world",
-      plot = FALSE,
-      fill = FALSE
-    )
-
-    p <- plotly::add_trace(
-      p,
-      x = countries$x,
-      y = countries$y,
-      type = "scatter",
-      mode = "lines",
-      line = list(
-        color = theme$border,
-        width = 1.2
-      ),
-      hoverinfo = "skip",
-      showlegend = FALSE,
-      inherit = FALSE
-    )
-
-    level <- selected_map_level()
-
-    title_text <- paste0(
-      "Geographic Trends - ",
-      month.name[as.integer(input$map_month)],
-      " - ",
-      signif(level$pressure_hPa, 5),
-      " hPa (",
-      tools::toTitleCase(observation_mode()),
-      ")"
-    )
-
-    p <- plotly::layout(
-      p,
-
-      title = title_text,
-
-      paper_bgcolor = theme$paper,
-      plot_bgcolor = theme$plot,
-      font = list(color = theme$text),
-
-      showlegend = FALSE,
-
-      xaxis = list(
-        title = "Longitude",
-        range = c(-125, -65),
-        autorange = FALSE,
-        fixedrange = TRUE,
-        gridcolor = theme$grid,
-        zeroline = FALSE,
-        tickmode = "linear",
-        dtick = 10
-      ),
-
-      yaxis = list(
-        title = "Latitude",
-        range = c(20, 50),
-        autorange = FALSE,
-        fixedrange = TRUE,
-        gridcolor = theme$grid,
-        zeroline = FALSE,
-        tickmode = "linear",
-        dtick = 5
-      ),
-
-      margin = list(
-        l = 65,
-        r = 115,
-        t = 75,
-        b = 75
-      ),
-
-      annotations = list(
-        list(
-          xref = "paper",
-          yref = "paper",
-          x = 0,
-          y = -0.18,
-          xanchor = "left",
-          showarrow = FALSE,
-
-          text = paste0(
-            "Original cells: ",
-            grid$original_cells,
-            " | Plotted cells: ",
-            grid$plotted_cells,
-            " | Trend range: ",
-            signif(grid$value_range[1], 4),
-            " to ",
-            signif(grid$value_range[2], 4),
-            " | Shared color limit: +/-",
-            signif(max_abs, 4)
-          ),
-
-          font = list(
-            size = 10,
-            color = theme$secondary
-          )
+    # Draw original 5x5 degree cells as rectangles; no interpolation.
+    for (i in seq_along(grid$lat_centers)) {
+      for (j in seq_along(grid$lon_centers)) {
+        v <- grid$z[i, j]
+        if (!is.finite(v)) next
+        map <- leaflet::addRectangles(
+          map,
+          lng1 = grid$lon_edges[j], lat1 = grid$lat_edges[i],
+          lng2 = grid$lon_edges[j + 1], lat2 = grid$lat_edges[i + 1],
+          stroke = TRUE, weight = 0.5, color = "#64748B",
+          fillColor = pal(max(-max_abs, min(max_abs, v))),
+          fillOpacity = 0.72,
+          popup = paste0("Latitude: ", grid$lat_centers[i],
+                         "<br>Longitude: ", grid$lon_centers[j],
+                         "<br>Trend/decade: ", signif(v, 6)),
+          options = leaflet::pathOptions(interactive = TRUE)
         )
+      }
+    }
+
+    map |>
+      leaflet::addLegend(position = "bottomright", pal = pal,
+                         values = c(-max_abs, max_abs),
+                         title = "Trend / decade", opacity = 1) |>
+      leaflet::addControl(
+        html = paste0("<strong>", month.name[as.integer(input$map_month)],
+                      " | ", signif(selected_map_level()$pressure_hPa, 5),
+                      " hPa</strong>"),
+        position = "topright",
+        className = "leaflet-control-layers"
       )
-    )
-
-    plotly::config(
-      p,
-      scrollZoom = FALSE,
-      displayModeBar = TRUE
-    )
   })
-
 }
-

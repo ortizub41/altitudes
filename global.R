@@ -4,6 +4,7 @@ library(plotly)
 library(data.table)
 library(maps)
 library(shinycssloaders)
+library(leaflet)
 
 trends_path <- 'data/shiny_monthly_trends.csv'
 if (!file.exists(trends_path)) stop('Missing: ', trends_path)
