@@ -10,6 +10,15 @@
 # - Missing cells remain blank
 # ============================================================
 
+# Display small/large trends without rounding nonzero values to zero.
+format_trend <- function(x, digits = 4) {
+  ifelse(
+    is.finite(x) & x != 0 & (abs(x) < 0.001 | abs(x) >= 10000),
+    formatC(x, format = "e", digits = digits - 1),
+    format(signif(x, digits), scientific = FALSE, trim = TRUE)
+  )
+}
+
 server <- function(input, output, session) {
 
   # ==========================================================
@@ -219,11 +228,11 @@ server <- function(input, output, session) {
           signif(pressure_hPa, 5),
           " hPa",
           "<br>Trend/decade: ",
-          signif(trend_per_decade, 5),
+          format_trend(trend_per_decade, 5),
           "<br>95% CI: ",
-          signif(ci_low, 3),
+          format_trend(ci_low, 3),
           " to ",
-          signif(ci_high, 3)
+          format_trend(ci_high, 3)
         ),
         hoverinfo = "text"
       )
@@ -376,7 +385,9 @@ server <- function(input, output, session) {
         autorange = FALSE,
         fixedrange = TRUE,
         gridcolor = theme$grid,
-        zerolinecolor = theme$secondary
+        zerolinecolor = theme$secondary,
+        tickformat = ".3e",
+        hoverformat = ".4e"
       ),
 
       yaxis = list(
@@ -483,12 +494,14 @@ server <- function(input, output, session) {
         c(1, theme$palette[3])
         ),
 
+        colorbar = list(title = "Trend / decade", tickformat = ".2e"),
+
         hoverongaps = FALSE,
 
         hovertemplate = paste0(
         "Month: %{x}",
         "<br>Pressure: %{customdata} hPa",
-        "<br>Trend/decade: %{z:.5g}",
+        "<br>Trend/decade: %{z:.4e}",
         "<extra></extra>"
         ),
 
@@ -598,42 +611,18 @@ server <- function(input, output, session) {
     ][order(-pressure_hPa)]
   })
 
-
-  # ==========================================================
-  # Preserve pressure slider selection when dropdowns change
-  # ==========================================================
-
   observeEvent(map_levels(), {
 
     levels <- map_levels()
-    n_levels <- nrow(levels)
 
-    # Remember the current slider position
-    current_index <- isolate(input$map_pressure_index)
-
-    # If no previous selection exists, start at level 1
-    if (is.null(current_index) ||
-        length(current_index) != 1 ||
-        !is.finite(current_index)) {
-      current_index <- 1L
-    }
-
-    # Keep the selection within the available range
-    new_index <- max(
-      1L,
-      min(n_levels, as.integer(current_index))
-    )
-
-    # Update the slider without resetting to level 1
     shiny::updateSliderInput(
       session,
       "map_pressure_index",
       min = 1,
-      max = n_levels,
-      value = new_index,
+      max = nrow(levels),
+      value = 1,
       step = 1
     )
-
   })
 
   selected_map_level <- reactive({
@@ -941,7 +930,7 @@ server <- function(input, output, session) {
           fillOpacity = 0.72,
           popup = paste0("Latitude: ", grid$lat_centers[i],
                          "<br>Longitude: ", grid$lon_centers[j],
-                         "<br>Trend/decade: ", signif(v, 6)),
+                         "<br>Trend/decade: ", format_trend(v, 6)),
           options = leaflet::pathOptions(interactive = TRUE)
         )
       }
@@ -950,7 +939,10 @@ server <- function(input, output, session) {
     map |>
       leaflet::addLegend(position = "bottomright", pal = pal,
                          values = c(-max_abs, max_abs),
-                         title = "Trend / decade", opacity = 1) |>
+                         title = "Trend / decade", opacity = 1,
+                         labFormat = function(type, cuts, p) {
+                           format_trend(cuts, 3)
+                         }) |>
       leaflet::addControl(
         html = paste0("<strong>", month.name[as.integer(input$map_month)],
                       " | ", signif(selected_map_level()$pressure_hPa, 5),

@@ -15,6 +15,7 @@ format_variable_label <- function(x) {
     carbon_monoxide = "Carbon Monoxide (ppbv)",
     geopotential_height = "Geopotential Height (m)"
   )
+  if (tolower(x) == "co_vmr") return("Carbon Monoxide Vmr")
   if (x %in% names(custom_labels)) return(unname(custom_labels[x]))
   tools::toTitleCase(gsub("_", " ", x, fixed = TRUE))
 }
